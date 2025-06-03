@@ -7,6 +7,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.location.Location
+import android.location.LocationManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -34,7 +35,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.Divider
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
@@ -65,13 +66,13 @@ import java.util.Date
 import java.util.Locale
 
 class MainActivity : ComponentActivity() {
-    
+
     // Permission request launcher for location permissions
     private val requestLocationPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
         val allGranted = permissions.entries.all { it.value }
-        
+
         if (allGranted) {
             // Check if we need background permission on Android 10+
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -88,7 +89,7 @@ class MainActivity : ComponentActivity() {
                     // All permissions including background are granted
                     Toast.makeText(
                         this,
-                        "すべての権限が許可されました。トラッキングを開始できます。",
+                        "All permissions granted. You can start tracking.",
                         Toast.LENGTH_LONG
                     ).show()
                 }
@@ -96,7 +97,7 @@ class MainActivity : ComponentActivity() {
                 // All permissions granted on pre-Android 10
                 Toast.makeText(
                     this,
-                    "位置情報の権限が許可されました。トラッキングを開始できます。",
+                    "Location permissions granted. You can start tracking.",
                     Toast.LENGTH_LONG
                 ).show()
             }
@@ -104,12 +105,12 @@ class MainActivity : ComponentActivity() {
             // Show message to user about permissions
             Toast.makeText(
                 this,
-                "位置情報の権限が必要です",
+                "Location permissions are required",
                 Toast.LENGTH_LONG
             ).show()
         }
     }
-    
+
     // Permission request launcher for background location (Android 10+)
     private val requestBackgroundPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -117,24 +118,24 @@ class MainActivity : ComponentActivity() {
         if (isGranted) {
             Toast.makeText(
                 this,
-                "バックグラウンド位置情報の権限が許可されました",
+                "Background location permission granted",
                 Toast.LENGTH_LONG
             ).show()
         } else {
             Toast.makeText(
                 this,
-                "バックグラウンドでの位置情報取得には、常に許可が必要です",
+                "Background location tracking requires 'Always allow' permission",
                 Toast.LENGTH_LONG
             ).show()
         }
     }
-    
+
     // State variables
     private var isTracking = mutableStateOf(false)
     private var currentLocation = mutableStateOf<Location?>(null)
     private var gpxFilePath = mutableStateOf<String>("")
     private val locationHistory = mutableStateListOf<Location>()
-    
+
     // Broadcast receiver for location updates
     private val locationReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -145,33 +146,37 @@ class MainActivity : ComponentActivity() {
                     @Suppress("DEPRECATION")
                     intent.getParcelableExtra(LocationService.EXTRA_LOCATION)
                 }
-                
+
                 val filePath = intent.getStringExtra(LocationService.EXTRA_GPX_FILE_PATH)
-                
+
                 location?.let {
                     currentLocation.value = it
                     locationHistory.add(it)
                 }
-                
+
                 filePath?.let {
                     gpxFilePath.value = it
                 }
             }
         }
     }
-    
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        
+
         // Register broadcast receiver
-        val filter = IntentFilter(LocationService.ACTION_LOCATION_UPDATED)
+        val filter = IntentFilter().apply {
+            addAction(LocationService.ACTION_LOCATION_UPDATED)
+            addAction("com.example.mc_e3_t2.TRACKING_STARTED")
+            addAction("com.example.mc_e3_t2.LOCATION_ERROR")
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(locationReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
         } else {
             registerReceiver(locationReceiver, filter)
         }
-        
+
         setContent {
             Mc_e3_t2Theme {
                 Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
@@ -188,55 +193,57 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
-        
+
         // Check permissions when app starts
         checkAndRequestPermissions()
     }
-    
+
     override fun onDestroy() {
         super.onDestroy()
         // Unregister receiver
-        unregisterReceiver(locationReceiver)
+        try {
+            unregisterReceiver(locationReceiver)
+        } catch (e: IllegalArgumentException) {
+            // Receiver was already unregistered
+        }
     }
-    
+
     private fun checkAndRequestPermissions() {
-        // 基本的な位置情報の権限
-        val locationPermissions = arrayOf(
+        // Basic location permissions
+        val locationPermissions = mutableListOf(
             Manifest.permission.ACCESS_FINE_LOCATION,
             Manifest.permission.ACCESS_COARSE_LOCATION
         )
-        
-        // ストレージの権限（Android 10未満の場合）
-        val storagePermissions = if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
-            arrayOf(
-                Manifest.permission.WRITE_EXTERNAL_STORAGE,
-                Manifest.permission.READ_EXTERNAL_STORAGE
-            )
-        } else {
-            emptyArray()
+
+        // Storage permissions (for Android 9 and below)
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            locationPermissions.add(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+            locationPermissions.add(Manifest.permission.READ_EXTERNAL_STORAGE)
         }
-        
-        // 必要な権限を組み合わせる
-        val requiredPermissions = locationPermissions + storagePermissions
-        
-        // 許可されていない権限をフィルタリング
-        val permissionsToRequest = requiredPermissions.filter {
+
+        // Notification permission (for Android 13+)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            locationPermissions.add(Manifest.permission.POST_NOTIFICATIONS)
+        }
+
+        // Filter permissions that haven't been granted
+        val permissionsToRequest = locationPermissions.filter {
             ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
         }.toTypedArray()
-        
+
         if (permissionsToRequest.isNotEmpty()) {
-            // 権限をリクエスト
+            // Request permissions
             requestLocationPermissionLauncher.launch(permissionsToRequest)
         } else {
-            // 基本的な権限は既に許可されている
-            // Android 10以降の場合、バックグラウンド位置情報の権限をチェック
+            // Basic permissions are already granted
+            // For Android 10+, check background location permission
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 if (ContextCompat.checkSelfPermission(
                         this,
                         Manifest.permission.ACCESS_BACKGROUND_LOCATION
                     ) != PackageManager.PERMISSION_GRANTED
                 ) {
-                    // バックグラウンド位置情報の権限をリクエスト
+                    // Request background location permission
                     requestBackgroundPermissionLauncher.launch(
                         Manifest.permission.ACCESS_BACKGROUND_LOCATION
                     )
@@ -244,42 +251,60 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
-    
+
     private fun startLocationTracking() {
-        // 必要な権限が許可されているか確認
+        // Check if required permissions are granted
         val hasLocationPermission = ContextCompat.checkSelfPermission(
             this,
             Manifest.permission.ACCESS_FINE_LOCATION
         ) == PackageManager.PERMISSION_GRANTED
-        
+
         if (!hasLocationPermission) {
-            // 権限がない場合は権限リクエスト
+            // If permissions are not granted, request them
             checkAndRequestPermissions()
             return
         }
-        
+
+        // Check if location services are enabled
+        val locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
+        val isGpsEnabled = locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)
+        val isNetworkEnabled = locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
+
+        if (!isGpsEnabled && !isNetworkEnabled) {
+            Toast.makeText(
+                this,
+                "Please enable location services in settings",
+                Toast.LENGTH_LONG
+            ).show()
+
+            // Open location settings
+            val intent = Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)
+            startActivity(intent)
+            return
+        }
+
         val intent = Intent(this, LocationService::class.java).apply {
             action = LocationService.ACTION_START_TRACKING
         }
-        
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             startForegroundService(intent)
         } else {
             startService(intent)
         }
-        
+
         isTracking.value = true
     }
-    
+
     private fun stopLocationTracking() {
         val intent = Intent(this, LocationService::class.java).apply {
             action = LocationService.ACTION_STOP_TRACKING
         }
         startService(intent)
-        
+
         isTracking.value = false
     }
-    
+
     private fun shareGpxFile() {
         if (gpxFilePath.value.isNotEmpty()) {
             val gpxFile = File(gpxFilePath.value)
@@ -289,14 +314,14 @@ class MainActivity : ComponentActivity() {
                     "${applicationContext.packageName}.provider",
                     gpxFile
                 )
-                
+
                 val shareIntent = Intent().apply {
                     action = Intent.ACTION_SEND
                     putExtra(Intent.EXTRA_STREAM, uri)
                     type = "application/gpx+xml"
                     addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 }
-                
+
                 startActivity(Intent.createChooser(shareIntent, "Share GPX File"))
             } else {
                 Toast.makeText(this, "GPX file not found", Toast.LENGTH_SHORT).show()
@@ -331,16 +356,16 @@ fun GPSTrackerApp(
             fontWeight = FontWeight.Bold,
             modifier = Modifier.padding(bottom = 16.dp)
         )
-        
+
         // Current status card
         StatusCard(
             isTracking = isTracking,
             currentLocation = currentLocation,
             gpxFilePath = gpxFilePath
         )
-        
+
         Spacer(modifier = Modifier.height(16.dp))
-        
+
         // Control buttons
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -354,7 +379,7 @@ fun GPSTrackerApp(
                 Spacer(modifier = Modifier.width(4.dp))
                 Text("Start Tracking")
             }
-            
+
             Button(
                 onClick = onStopTracking,
                 enabled = isTracking
@@ -364,9 +389,9 @@ fun GPSTrackerApp(
                 Text("Stop Tracking")
             }
         }
-        
+
         Spacer(modifier = Modifier.height(8.dp))
-        
+
         // Share GPX button
         Button(
             onClick = onShareGpx,
@@ -374,16 +399,16 @@ fun GPSTrackerApp(
         ) {
             Text("Share GPX File")
         }
-        
+
         Spacer(modifier = Modifier.height(16.dp))
-        
+
         // Location history
         Text(
             text = "Location History",
             style = MaterialTheme.typography.titleMedium,
             modifier = Modifier.padding(bottom = 8.dp)
         )
-        
+
         LocationHistoryList(locationHistory = locationHistory)
     }
 }
@@ -406,25 +431,28 @@ fun StatusCard(
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold
             )
-            
+
             Spacer(modifier = Modifier.height(8.dp))
-            
+
             if (currentLocation != null) {
-                Text("Latitude: ${currentLocation.latitude}")
-                Text("Longitude: ${currentLocation.longitude}")
-                Text("Accuracy: ${currentLocation.accuracy} meters")
+                Text("Latitude: ${String.format("%.6f", currentLocation.latitude)}")
+                Text("Longitude: ${String.format("%.6f", currentLocation.longitude)}")
+                Text("Accuracy: ${String.format("%.1f", currentLocation.accuracy)} meters")
                 if (currentLocation.hasAltitude()) {
-                    Text("Altitude: ${currentLocation.altitude} meters")
+                    Text("Altitude: ${String.format("%.1f", currentLocation.altitude)} meters")
                 }
                 if (currentLocation.hasSpeed()) {
-                    Text("Speed: ${currentLocation.speed * 3.6} km/h") // Convert m/s to km/h
+                    Text("Speed: ${String.format("%.1f", currentLocation.speed * 3.6)} km/h") // Convert m/s to km/h
                 }
+
+                val timeFormat = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
+                Text("Last update: ${timeFormat.format(Date(currentLocation.time))}")
             } else {
                 Text("No location data available")
             }
-            
+
             Spacer(modifier = Modifier.height(8.dp))
-            
+
             if (gpxFilePath.isNotEmpty()) {
                 val filename = gpxFilePath.split("/").last()
                 Text("Recording to: $filename")
@@ -449,7 +477,7 @@ fun LocationHistoryList(locationHistory: List<Location>) {
         ) {
             items(locationHistory) { location ->
                 LocationItem(location = location)
-                Divider()
+                HorizontalDivider()
             }
         }
     }
@@ -468,21 +496,28 @@ fun LocationItem(location: Location) {
             contentDescription = "Location",
             tint = MaterialTheme.colorScheme.primary
         )
-        
+
         Spacer(modifier = Modifier.width(16.dp))
-        
+
         Column {
             Text(
-                text = "Lat: ${location.latitude}, Lon: ${location.longitude}",
+                text = "Lat: ${String.format("%.6f", location.latitude)}, Lon: ${String.format("%.6f", location.longitude)}",
                 style = MaterialTheme.typography.bodyMedium
             )
-            
+
             val dateFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
             val timeString = dateFormat.format(Date(location.time))
             Text(
                 text = timeString,
                 style = MaterialTheme.typography.bodySmall
             )
+
+            if (location.hasAccuracy()) {
+                Text(
+                    text = "Accuracy: ${String.format("%.1f", location.accuracy)}m",
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
         }
     }
 }
@@ -491,7 +526,7 @@ fun LocationItem(location: Location) {
 fun PermissionRequestComposable() {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    
+
     // Remember the permission request state
     var hasLocationPermission by remember {
         mutableStateOf(
@@ -501,7 +536,7 @@ fun PermissionRequestComposable() {
             ) == PackageManager.PERMISSION_GRANTED
         )
     }
-    
+
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
@@ -511,14 +546,14 @@ fun PermissionRequestComposable() {
                 ) == PackageManager.PERMISSION_GRANTED
             }
         }
-        
+
         lifecycleOwner.lifecycle.addObserver(observer)
-        
+
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
         }
     }
-    
+
     if (!hasLocationPermission) {
         Column(
             modifier = Modifier
@@ -530,9 +565,9 @@ fun PermissionRequestComposable() {
                 "Location permission is required for this app to work properly.",
                 textAlign = TextAlign.Center
             )
-            
+
             Spacer(modifier = Modifier.height(8.dp))
-            
+
             Button(
                 onClick = {
                     val intent = Intent(
